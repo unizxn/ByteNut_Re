@@ -49,7 +49,12 @@ jobs:
           from urllib.parse import parse_qs, unquote, urlparse
 
           def mask(s):
-              return f"{s[:2]}***{s[-2:]}" if len(s) > 4 else "****"
+              if len(s) > 4:
+                  return f"*{s[1]}***{s[-2]}*"
+              return "****"
+
+          def mask_port(p):
+              return "****"
 
           url = os.environ.get("PROXY_NODE", "").strip()
           if not url:
@@ -70,15 +75,18 @@ jobs:
               content = url[5:]
           elif url.startswith("socks5://") or url.startswith("socks://"):
               protocol = "socks5"
+              # 解析 SOCKS5 URL: socks5://[user:pass@]server:port
               content = url.split("://")[1].split("#")[0]
+              socks_user = ""
+              socks_pass = ""
               if "@" in content:
-                  server = content.split("@")[1].split(":")[0]
+                  userinfo, server_part = content.rsplit("@", 1)
+                  if ":" in userinfo:
+                      socks_user, socks_pass = userinfo.split(":", 1)
+                  address, port = server_part.rsplit(":", 1)
               else:
-                  server = content.split(":")[0]
-              print(f"[INFO] SOCKS5 -> {mask(server)}")
-              with open("use_external_socks.txt", "w") as f:
-                  f.write(url.split("#")[0])
-              sys.exit(0)
+                  address, port = content.rsplit(":", 1)
+              print(f"[INFO] SOCKS5 -> {mask(address)}:{mask_port(port)}")
           else:
               print(f"[ERROR] 不支持的协议: {url.split('://')[0]}")
               sys.exit(1)
@@ -94,6 +102,22 @@ jobs:
               ],
               "outbounds": []
           }
+
+          # SOCKS5 协议：生成 Xray SOCKS outbound，走本地转发
+          if protocol == "socks5":
+              server_entry = {"address": address, "port": int(port)}
+              if socks_user or socks_pass:
+                  server_entry["users"] = [{"user": socks_user, "pass": socks_pass}]
+              outbound = {
+                  "protocol": "socks",
+                  "settings": {"servers": [server_entry]}
+              }
+              config["outbounds"].append(outbound)
+
+              with open("xray_config.json", "w") as f:
+                  json.dump(config, f, indent=2)
+              print("[INFO] ✅ SOCKS5 代理配置已生成（走 Xray 转发）")
+              sys.exit(0)  # 正常退出，配置已写好，交由 bash 启动 Xray
 
           if protocol == "vless":
               uuid, rest = content.split("@", 1)
@@ -117,7 +141,7 @@ jobs:
               host = params.get("host", [sni])[0]
               path = unquote(params.get("path", ["/"])[0])
               
-              print(f"[INFO] VLESS -> {mask(address)}:{port} (security: {security}, network: {network})")
+              print(f"[INFO] VLESS -> {mask(address)}:{mask_port(port)} (security: {security}, network: {network})")
               
               outbound = {
                   "protocol": "vless",
@@ -185,7 +209,7 @@ jobs:
               path = vm.get("path", "/")
               fp = vm.get("fp", "chrome")
               
-              print(f"[INFO] VMess -> {mask(address)}:{port} (network: {network}, tls: {tls})")
+              print(f"[INFO] VMess -> {mask(address)}:{mask_port(port)} (network: {network}, tls: {tls})")
               
               outbound = {
                   "protocol": "vmess",
@@ -236,7 +260,7 @@ jobs:
               path = unquote(params.get("path", ["/"])[0])
               fp = params.get("fp", ["chrome"])[0]
               
-              print(f"[INFO] Trojan -> {mask(address)}:{port} (network: {network})")
+              print(f"[INFO] Trojan -> {mask(address)}:{mask_port(port)} (network: {network})")
               
               outbound = {
                   "protocol": "trojan",
@@ -285,7 +309,7 @@ jobs:
                   print(f"[ERROR] Shadowsocks 解析失败: {e}")
                   sys.exit(1)
               
-              print(f"[INFO] Shadowsocks -> {mask(address)}:{port}")
+              print(f"[INFO] Shadowsocks -> {mask(address)}:{mask_port(port)}")
               
               outbound = {
                   "protocol": "shadowsocks",
@@ -307,16 +331,7 @@ jobs:
           print("[INFO] ✅ 代理配置已生成")
           PYEOF
 
-          # 外部 SOCKS5 代理
-          if [ -f "use_external_socks.txt" ]; then
-            EXTERNAL_SOCKS=$(cat use_external_socks.txt)
-            echo "proxy_server=$EXTERNAL_SOCKS" >> $GITHUB_OUTPUT
-            echo "use_proxy=true" >> $GITHUB_OUTPUT
-            echo "[INFO] ✅ 使用外部 SOCKS5 代理"
-            exit 0
-          fi
-
-          # 启动 Xray 并测试连通性
+          # 启动 Xray 并测试连通性（所有协议统一走 Xray 转发）
           ./xray/xray run -c xray_config.json > xray.log 2>&1 &
           sleep 5
 
@@ -350,14 +365,21 @@ jobs:
           sleep 2
           python3 main.py
 
-      - name: 上传截图
+      - name: 上传调试文件
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
-          path: artifacts/
+          path: |
+            artifacts/
+            xray.log
           retention-days: 3
           if-no-files-found: ignore
+
+      - name: 清理敏感文件
+        if: always()
+        run: |
+          rm -f xray_config.json xray.log use_external_socks.txt
 
       - name: 清理历史
         if: always()
