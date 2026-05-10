@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: 拉取仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 安装Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
@@ -345,14 +345,26 @@ jobs:
           PROXY: ${{ steps.proxy.outputs.proxy_server }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
-          xvfb-run -a python3 main.py
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          python3 main.py
+
+      - name: 上传截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: artifacts/
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: 清理历史
         if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}
-          retain_days: 0
-          keep_minimum_runs: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUNS=$(gh run list --workflow "${{ github.workflow }}" --json databaseId --limit 100 -q '.[].databaseId' | tail -n +3)
+          for RUN_ID in $RUNS; do
+            gh run delete "$RUN_ID" || true
+          done
