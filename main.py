@@ -439,19 +439,55 @@ class BytenutRenewal:
                 proxy=PROXY
             ) as sb:
                 try:
-                    # 登录
-                    sb.uc_open_with_reconnect(URL_LOGIN_PANEL, reconnect_time=5)
-                    sb.wait_for_element_visible('input[placeholder="Username"]', timeout=25)
-                    sb.type('input[placeholder="Username"]', user)
-                    sb.type('input[placeholder="Password"]', pwd)
-                    sb.click('//button[contains(., "Sign In")]')
-                    time.sleep(5)
-                    if "/auth/login" in sb.get_current_url():
-                        err = ""
+                    # 登录（带重试机制）
+                    login_success = False
+                    for attempt in range(1, 4):  # 最多重试3次
+                        if attempt > 1:
+                            self.log(f"🔄 第 {attempt} 次重试登录...")
+                            time.sleep(3)
                         try:
-                            err = sb.find_element('div.el-form-item__error').text
-                        except:
-                            pass
+                            sb.uc_open_with_reconnect(URL_LOGIN_PANEL, reconnect_time=8)
+                            # 等待页面完全加载
+                            time.sleep(3)
+                            # 调试：输出当前页面URL和标题
+                            try:
+                                self.log(f"📍 当前页面: {sb.get_current_url()}")
+                                self.log(f"📄 页面标题: {sb.get_title()}")
+                            except:
+                                pass
+                            # 处理可能出现的 Turnstile 验证
+                            self.wait_turnstile(sb, timeout=30)
+                            # 移除遮挡广告/弹窗
+                            self.remove_overlay_ads(sb)
+                            # 增加超时到60秒，给页面更多加载时间
+                            sb.wait_for_element_visible('input[placeholder="Username"]', timeout=60)
+                            sb.type('input[placeholder="Username"]', user)
+                            sb.type('input[placeholder="Password"]', pwd)
+                            sb.click('//button[contains(., "Sign In")]')
+                            time.sleep(8)
+                            if "/auth/login" not in sb.get_current_url():
+                                login_success = True
+                                break
+                            else:
+                                err = ""
+                                try:
+                                    err = sb.find_element('div.el-form-item__error').text
+                                except:
+                                    pass
+                                self.log(f"⚠️ 登录未成功: {err}")
+                                self.shot(sb, f"login_attempt_{idx}_{attempt}.png")
+                        except Exception as login_err:
+                            self.log(f"⚠️ 登录尝试 {attempt} 异常: {login_err}")
+                            # 调试：输出当前页面信息帮助排查
+                            try:
+                                self.log(f"📍 异常时页面: {sb.get_current_url()}")
+                                page_src = sb.get_page_source()[:500]
+                                self.log(f"🔍 页面片段: {page_src}")
+                            except:
+                                pass
+                            self.shot(sb, f"login_attempt_{idx}_{attempt}.png")
+
+                    if not login_success:
                         self.send_tg("❌", "登录失败", user, "未知", "未知", "",
                                      self.shot(sb, f"login_fail_{idx}.png"))
                         continue
